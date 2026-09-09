@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# 게임 실행 시 생성되는 개인 저장 데이터
+Pokemon_saves/
+
+# PyInstaller 빌드 산출물
+build/
+dist/
+*.spec
+
+# Claude Code 로컬 상태
+.claude/
