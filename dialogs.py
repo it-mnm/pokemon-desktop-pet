@@ -712,7 +712,6 @@ class PokemonManagerDialog(DraggableDialog):
 
     def show_pet_context_menu(self, pet_data, global_pos):
         is_dead = pet_data.get('dead', False)
-        is_spawned = bool(pet_data.get('widget'))
 
         menu = QMenu(self)
         menu.setStyleSheet(f"""
@@ -732,11 +731,6 @@ class PokemonManagerDialog(DraggableDialog):
         rename_action.setEnabled(not is_dead)
 
         menu.addSeparator()
-        # TODO(테스트용, 정식 배포 전 제거)
-        levelup_action = menu.addAction("LvUP (테스트)")
-        levelup_action.setEnabled(is_spawned and not is_dead)
-
-        menu.addSeparator()
         delete_action = menu.addAction("삭제")
 
         chosen = menu.exec(global_pos)
@@ -746,8 +740,6 @@ class PokemonManagerDialog(DraggableDialog):
             self.send_to_pc(pet_data)
         elif chosen == rename_action:
             self.prompt_rename(pet_data)
-        elif chosen == levelup_action:
-            self.force_level_up(pet_data)
         elif chosen == delete_action:
             self.delete_pokemon(pet_data)
 
@@ -790,16 +782,6 @@ class PokemonManagerDialog(DraggableDialog):
             widget.update_ui()
 
         self.manager.save_game()
-        self.refresh_list()
-
-    def force_level_up(self, pet_data):
-        """TODO(테스트용, 정식 배포 전 제거): 진화/레벨업 테스트를 위해 친밀도를
-        100 채워 즉시 레벨업(+진화 체크)시킨다."""
-        widget = pet_data.get('widget')
-        if not widget:
-            show_info(self, "알림", "테스트 레벨업은 포켓몬을 꺼내놓은 상태에서만 가능합니다.")
-            return
-        widget.add_exp(100)
         self.refresh_list()
 
     def add_new_pokemon(self):
