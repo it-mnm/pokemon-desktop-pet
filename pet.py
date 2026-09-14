@@ -1,20 +1,135 @@
 import os
 import random
-from PyQt6.QtWidgets import QWidget, QLabel, QProgressBar, QVBoxLayout, QApplication, QDialog, QPushButton, QGridLayout, QScrollArea
+from PyQt6.QtWidgets import QWidget, QLabel, QProgressBar, QVBoxLayout, QHBoxLayout, QApplication, QDialog, QPushButton
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QFont, QMovie, QPixmap
-from utils import ASSETS_DIR, FoodItem, PIXEL_FONT_FAMILY
+from utils import ASSETS_DIR, FoodItem, PIXEL_FONT_FAMILY, DraggableDialog
+from pokemon_data import POKEMON_DEX, get_ko_name
 
 MAX_LIFE = 5
+BOX_CAPACITY = 6
+PC_CAPACITY = 50
 
-class EvolutionDialog(QDialog):
+FREE_FOOD_ICON = "🍎"  # 무료 먹이는 항상 이 아이콘 하나로 통일
+FREE_FOOD_HUNGER = 8   # 무료 먹이 포만감 회복량 (유료 최하위 등급보다도 낮게)
+FREE_FOOD_NAME = "무료 열매"
+FREE_FOOD_REACTION = "😊"  # 무료 먹이를 먹였을 때 뜨는 반응 이모티콘 (웃음)
+
+FOOD_TIERS = {
+    "basic":   {"name": "오랑열매", "price": 10, "hunger": 15, "icon": "oran-berry.png", "reaction": "😀"},
+    "good":    {"name": "기주열매", "price": 30, "hunger": 35, "icon": "sitrus-berry.png", "reaction": "😋"},
+    "premium": {"name": "기묘열매", "price": 80, "hunger": 70, "icon": "enigma-berry.png", "reaction": "😍"},
+}
+FOOD_TIER_ORDER = ["premium", "good", "basic"]  # 먹이주기 시 가장 좋은 등급부터 소모
+
+
+def get_food_effect(tier):
+    """tier가 None이면 무료 먹이, 아니면 FOOD_TIERS[tier] 기준으로
+    (포만감 회복량, 아이콘, 이름, 반응 이모티콘)을 반환한다."""
+    if tier is None:
+        return FREE_FOOD_HUNGER, FREE_FOOD_ICON, FREE_FOOD_NAME, FREE_FOOD_REACTION
+    info = FOOD_TIERS[tier]
+    return info['hunger'], info['icon'], info['name'], info['reaction']
+
+
+def get_max_hunger(level):
+    """레벨이 오를수록 포만감 총량(최대치)이 조금씩 늘어난다."""
+    return 100 + (max(1, level) - 1) * 5
+
+
+def get_hunger_decay_amount(level):
+    """레벨이 오를수록 포만감이 더 빨리(한 틱에 더 많이) 줄어든다.
+    (레벨 8마다 +1이던 것을 15마다 +1로 완화 — 예전엔 고레벨에서 너무 빨리
+    배고파진다는 피드백이 있었다.)"""
+    return 1 + (max(1, level) - 1) // 15
+
+
+def apply_evolution(pet_data, new_base_name, floating=True):
+    """진화를 pet_data에 실제로 적용한다. 레벨 기반/돌 기반 진화 모두 이 함수로
+    귀결된다. 스폰되어 있으면(위젯 존재) 스프라이트/크기도 즉시 갱신하고,
+    보관 중(상자/PC)이면 다음에 꺼낼 때 DesktopPet.__init__이 바뀐
+    pokemon_base_name을 기준으로 알아서 정상 로드된다."""
+    new_ko = get_ko_name(new_base_name)
+    pet_data['pokemon_base_name'] = new_base_name
+    pet_data['pokemon_type_ko'] = new_ko
+    widget = pet_data.get('widget')
+    if widget is not None:
+        widget.adjust_pet_size()
+        widget.update_pokemon_movie()
+        if floating:
+            widget.show_floating_text(f"✨ {new_ko}(으)로 진화! ✨", "#00BFFF")
+    return new_ko
+
+
+def check_evolution_for(pet_data):
+    """POKEMON_DEX 테이블을 읽어 레벨/분기 진화를 판정한다. 스폰 여부와
+    무관하게(상자/PC에 있는 포켓몬에게 이상한 사탕을 써도 진화가 정상 발동해야
+    하므로) pet_data만으로 동작한다. 돌 진화(method == 'stone')는 여기서
+    패시브로 체크하지 않고, 인벤토리에서 돌을 사용하는 액션에서만
+    apply_evolution으로 직접 적용된다."""
+    base_name = pet_data['pokemon_base_name']
+    level = pet_data['level']
+    pokemon_ko_name = pet_data.get('nickname') or pet_data['pokemon_type_ko']
+
+    entry = POKEMON_DEX.get(base_name)
+    if not entry:
+        return
+    method = entry.get('method')
+
+    if method == 'level' and level >= entry['level']:
+        apply_evolution(pet_data, entry['evolves_to'])
+
+    elif method == 'branch' and level >= entry.get('branch_level', 9999) \
+            and not pet_data.get('is_evolved', False):
+        dlg = EvolutionDialog(base_name, pokemon_ko_name, options=entry['branch_options'])
+        screen = QApplication.primaryScreen().geometry()
+        dlg.move((screen.width() - dlg.width()) // 2, (screen.height() - dlg.height()) // 2)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_evolution:
+            new_base, _ = dlg.selected_evolution
+            apply_evolution(pet_data, new_base)
+
+        # 어느 쪽이든 진화 완료 플래그 설정 (취소해도 다시는 안 뜸)
+        pet_data['is_evolved'] = True
+
+
+def apply_rare_candy(pet_data):
+    """이상한 사탕: 친밀도(경험치)와 무관하게 레벨을 무조건 1 올린다.
+    그 결과로 진화 조건을 충족하면 그 자리에서 진화도 함께 판정한다."""
+    pet_data['level'] = pet_data.get('level', 1) + 1
+    check_evolution_for(pet_data)
+    widget = pet_data.get('widget')
+    if widget is not None:
+        widget.update_ui()
+        widget.show_floating_text("🍬 레벨업!", "#FFD700")
+
+
+def apply_revive(pet_data):
+    """부활의 약: 사망한 포켓몬을 목숨 5(가득 찬 상태)로 되살린다."""
+    pet_data['dead'] = False
+    pet_data['life'] = MAX_LIFE
+    widget = pet_data.get('widget')
+    if widget is not None:
+        widget.update_ui()
+
+
+class EvolutionDialog(DraggableDialog):
     """포켓몬 진화 선택 다이얼로그 (전체 진화체 표시 및 스크롤 지원)"""
-    def __init__(self, current_base_name, pokemon_ko_name="이브이"):
+    def __init__(self, current_base_name, pokemon_ko_name="이브이", options=None):
         super().__init__()
         self.selected_evolution = None
         self.setWindowTitle("포켓몬 진화!")
-        self.setFixedSize(320, 310)
+        # 항상 맨 위에 뜨도록: 이 창은 포켓몬 상자 등이 이미 열려있는 상태에서
+        # 레벨업 중에 갑자기 뜰 수 있는데, 이 플래그가 없으면 상자 창(항상 위)에
+        # 가려져서 선택을 못 하는 문제가 있었다.
+        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
+
+        evolutions = options if options is not None else []
+        btn_width = 100
+        dialog_width = max(320, len(evolutions) * (btn_width + 12) + 40)
+        self.setFixedSize(dialog_width, 220)
         self.setStyleSheet("background-color: #FFF0F5; border-radius: 10px;")
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
 
         main_layout = QVBoxLayout(self)
 
@@ -24,44 +139,24 @@ class EvolutionDialog(QDialog):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(label)
 
-        # 스크롤 영역 생성 (진화체가 많아져도 전부 표시되도록 함)
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("background: transparent; border: none;")
-
-        scroll_content = QWidget()
-        grid_layout = QGridLayout(scroll_content)
-        grid_layout.setContentsMargins(5, 5, 5, 5)
-
-        # 전체 진화체 목록 (예시 확장 가능)
-        evolutions = [
-            ("샤미드", "vaporeon"),
-            ("쥬피썬더", "jolteon"),
-            ("부스터", "flareon"),
-            ("에브이", "espeon"),
-            ("블래키", "umbreon"),
-            ("리피아", "leafeon"),
-            ("글레이시아", "glaceon"),
-            ("님피아", "sylveon")
-        ]
-
-        for i, (ko_name, base_name) in enumerate(evolutions):
-            btn = QPushButton(ko_name, scroll_content)
+        # 선택지들을 한 줄로 나란히 배치 (창 폭은 위에서 개수에 맞춰 이미 계산됨)
+        row_layout = QHBoxLayout()
+        row_layout.setSpacing(12)
+        for base_name, ko_name in evolutions:
+            btn = QPushButton(ko_name, self)
+            btn.setFixedWidth(btn_width)
             btn.setFont(QFont(PIXEL_FONT_FAMILY, 9, QFont.Weight.Bold))
             btn.setStyleSheet("""
                 QPushButton { background-color: #FF69B4; color: white; border-radius: 5px; padding: 8px; }
                 QPushButton:hover { background-color: #FF1493; }
             """)
             btn.clicked.connect(lambda checked, b=base_name, k=ko_name: self.select_evo(b, k))
-            row, col = divmod(i, 2)
-            grid_layout.addWidget(btn, row, col)
-
-        scroll.setWidget(scroll_content)
-        main_layout.addWidget(scroll)
+            row_layout.addWidget(btn)
+        main_layout.addLayout(row_layout)
 
         # 취소 버튼 추가
         button_layout = QVBoxLayout()
-        cancel_btn = QPushButton("이브이로 남기", self)
+        cancel_btn = QPushButton(f"{pokemon_ko_name}(으)로 남기", self)
         cancel_btn.setFont(QFont(PIXEL_FONT_FAMILY, 9, QFont.Weight.Bold))
         cancel_btn.setStyleSheet("""
             QPushButton { background-color: #CCCCCC; color: black; border-radius: 5px; padding: 8px; }
@@ -70,6 +165,11 @@ class EvolutionDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
         main_layout.addLayout(button_layout)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
 
     def select_evo(self, base_name, ko_name):
         self.selected_evolution = (base_name, ko_name)
@@ -113,6 +213,7 @@ class DesktopPet(QWidget):
         self.jump_vy = 0.0
         self.gravity = 0.8
         self.pending_greeting_jumps = 0  # 상자에서 꺼낼 때 제자리 환영 점프 남은 횟수
+        self.dash_ticks_remaining = 0  # 포켓몬 상호작용으로 질주 중인 남은 틱 수(100ms 단위)
 
         self.initUI()
         self.initPhysics()
@@ -122,18 +223,27 @@ class DesktopPet(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
-        screen = QApplication.primaryScreen().availableGeometry()
-        self.screen_width, self.screen_height = screen.width(), screen.height()
+        self.window_width, self.window_height = 160, 120
 
-        window_width, window_height = 160, 120
-        self.floor_y = self.screen_height - window_height
-        spawn_x = random.randint(100, max(100, self.screen_width - window_width - 100))
-        self.setGeometry(spawn_x, self.floor_y, window_width, window_height)
+        primary_avail = QApplication.primaryScreen().availableGeometry()
+        spawn_x = random.randint(
+            primary_avail.x(),
+            max(primary_avail.x(), primary_avail.x() + primary_avail.width() - self.window_width - 100)
+        )
+        spawn_y = primary_avail.y() + primary_avail.height() - self.window_height
+        self.setGeometry(spawn_x, spawn_y, self.window_width, self.window_height)
 
+        # 지금 실제로 놓인 모니터 기준으로 바닥/좌우 경계를 계산해둔다
+        self.update_screen_bounds()
+
+        # 긴 문구("LEVEL UP! +50G", "에스퍼(으)로 진화!" 등)도 잘리지 않도록
+        # 창 폭(160)에 거의 맞춰 넓게 잡고 줄바꿈을 허용한다. 예전에는 100px
+        # 고정 폭이라 텍스트가 박스보다 길면 앞부분이 그대로 잘려 보였다.
         self.emoticon_label = QLabel(self)
-        self.emoticon_label.setGeometry(30, 25, 100, 20)
+        self.emoticon_label.setGeometry(5, 12, 150, 32)
         self.emoticon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.emoticon_label.setFont(QFont(PIXEL_FONT_FAMILY, 10, QFont.Weight.Bold))
+        self.emoticon_label.setWordWrap(True)
+        self.emoticon_label.setFont(QFont(PIXEL_FONT_FAMILY, 9, QFont.Weight.Bold))
         self.emoticon_label.hide()
 
         self.pet_label = QLabel(self)
@@ -183,6 +293,22 @@ class DesktopPet(QWidget):
         self.update_ui()
         self.show()
 
+    def update_screen_bounds(self):
+        """현재 위젯이 걸쳐 있는 모니터를 기준으로 바닥(floor_y)과 좌우 이동
+        경계를 다시 계산한다. 모니터마다 해상도/작업표시줄 높이가 달라서,
+        스폰 시 한 번만 계산해두면 다른 모니터로 옮겼을 때 작업표시줄 아래로
+        반쯤 잠기거나 화면 경계에서 계속 튕기며 끼는 문제가 생긴다."""
+        screen = self.screen() or QApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        self.floor_y = avail.y() + avail.height() - self.window_height
+
+        # 좌우 이동 범위는 모니터 하나가 아니라 가상 데스크톱 전체(연결된
+        # 모니터를 모두 합친 영역)로 잡아서, 듀얼모니터 사이를 걸어서
+        # 넘어갈 수 있게 한다.
+        virt = screen.virtualGeometry()
+        self.left_bound = virt.x()
+        self.right_bound = virt.x() + virt.width() - self.window_width
+
     def adjust_pet_size(self):
         base_name = self.pet_data.get('pokemon_base_name', 'eevee')
         if base_name == "mimikyu":
@@ -191,8 +317,13 @@ class DesktopPet(QWidget):
             # 꼬북이 계열은 더 작게 표시
             self.pet_label.setGeometry(50, 45, 40, 40)
         elif base_name == "gible":
-            # 이어롤: 가로로 넓은 형태 (31×44), 가운데 정렬
+            # 이어롤: 세로로 긴 형태, 가운데 정렬 (원래 크기로 복원 — 실제로
+            # 해상도가 깨져 보였던 건 이어롭(gabite)이었음)
             self.pet_label.setGeometry(65, 40, 31, 44)
+        elif base_name == "gabite":
+            # 이어롭: 원본 비율 약 0.85(53×62)로 이어롤보다 훨씬 통통한 체형.
+            # 전용 박스로 크게 표시한다.
+            self.pet_label.setGeometry(48, 30, 64, 62)
         else:
             self.pet_label.setGeometry(50, 40, 60, 50)
 
@@ -212,7 +343,9 @@ class DesktopPet(QWidget):
         if self.pet_data['friendship'] >= 100:
             self.pet_data['level'] += 1
             self.pet_data['friendship'] -= 100
-            self.show_floating_text("🎉 LEVEL UP! 🎉", "#FFD700")
+            gold_bonus = self.pet_data['level'] * 10
+            self.manager.gold += gold_bonus
+            self.show_floating_text(f"🎉 LEVEL UP! +{gold_bonus}G 🎉", "#FFD700")
             self.check_evolution()
             self.manager.save_game()  # 레벨업 후 자동 저장
         elif amount < 0:
@@ -220,80 +353,7 @@ class DesktopPet(QWidget):
         self.update_ui()
 
     def check_evolution(self):
-        base_name = self.pet_data['pokemon_base_name']
-        level = self.pet_data['level']
-        pokemon_ko_name = self.pet_data.get('nickname') or self.pet_data['pokemon_type_ko']
-
-        # 이브이: 레벨 10에서 선택 진화
-        if level == 10 and base_name == "eevee" and not self.pet_data.get('is_evolved', False):
-            dlg = EvolutionDialog(base_name, pokemon_ko_name)
-            screen = QApplication.primaryScreen().geometry()
-            dlg.move((screen.width() - dlg.width()) // 2, (screen.height() - dlg.height()) // 2)
-
-            if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_evolution:
-                new_base, new_ko = dlg.selected_evolution
-                self.pet_data['pokemon_base_name'] = new_base
-                self.pet_data['pokemon_type_ko'] = new_ko
-                self.update_pokemon_movie()
-                self.adjust_pet_size()
-                self.show_floating_text(f"✨ {new_ko}(으)로 진화! ✨", "#00BFFF")
-
-            # 어느 쪽이든 진화 완료 플래그 설정 (취소해도 다시는 안 뜸)
-            self.pet_data['is_evolved'] = True
-
-        # 꼬북이: 레벨 15에서 어니부기로 진화
-        elif level == 15 and base_name == "squirtle" and self.pet_data.get('evolution_stage', 0) == 0:
-            self.pet_data['pokemon_base_name'] = "wartortle"
-            self.pet_data['pokemon_type_ko'] = "어니부기"
-            self.pet_data['evolution_stage'] = 1
-            self.update_pokemon_movie()
-            self.adjust_pet_size()
-            self.show_floating_text("✨ 어니부기(으)로 진화! ✨", "#00BFFF")
-
-        # 꼬북이 진화체: 레벨 30에서 거북왕으로 진화
-        elif level == 30 and base_name == "wartortle" and self.pet_data.get('evolution_stage', 0) == 1:
-            self.pet_data['pokemon_base_name'] = "blastoise"
-            self.pet_data['pokemon_type_ko'] = "거북왕"
-            self.pet_data['evolution_stage'] = 2
-            self.update_pokemon_movie()
-            self.adjust_pet_size()
-            self.show_floating_text("✨ 거북왕(으)로 진화! ✨", "#00BFFF")
-
-        # 이어롤: 레벨 10에서 이어롭으로 진화
-        elif level == 10 and base_name == "gible" and self.pet_data.get('evolution_stage', 0) == 0:
-            self.pet_data['pokemon_base_name'] = "gabite"
-            self.pet_data['pokemon_type_ko'] = "이어롭"
-            self.pet_data['evolution_stage'] = 1
-            self.update_pokemon_movie()
-            self.adjust_pet_size()
-            self.show_floating_text("✨ 이어롭(으)로 진화! ✨", "#00BFFF")
-
-        # 리오르: 레벨 20에서 루카리오로 진화
-        elif level == 20 and base_name == "riolu" and self.pet_data.get('evolution_stage', 0) == 0:
-            self.pet_data['pokemon_base_name'] = "lucario"
-            self.pet_data['pokemon_type_ko'] = "루카리오"
-            self.pet_data['evolution_stage'] = 1
-            self.update_pokemon_movie()
-            self.adjust_pet_size()
-            self.show_floating_text("✨ 루카리오(으)로 진화! ✨", "#00BFFF")
-
-        # 랄토스: 레벨 10에서 킬리아로 진화
-        elif level == 10 and base_name == "ralts" and self.pet_data.get('evolution_stage', 0) == 0:
-            self.pet_data['pokemon_base_name'] = "kirlia"
-            self.pet_data['pokemon_type_ko'] = "킬리아"
-            self.pet_data['evolution_stage'] = 1
-            self.update_pokemon_movie()
-            self.adjust_pet_size()
-            self.show_floating_text("✨ 킬리아(으)로 진화! ✨", "#00BFFF")
-
-        # 킬리아: 레벨 20에서 가디안으로 진화
-        elif level == 20 and base_name == "kirlia" and self.pet_data.get('evolution_stage', 0) == 1:
-            self.pet_data['pokemon_base_name'] = "gardevoir"
-            self.pet_data['pokemon_type_ko'] = "가디안"
-            self.pet_data['evolution_stage'] = 2
-            self.update_pokemon_movie()
-            self.adjust_pet_size()
-            self.show_floating_text("✨ 가디안(으)로 진화! ✨", "#00BFFF")
+        check_evolution_for(self.pet_data)
 
     def show_floating_text(self, text, color="#FF4081"):
         self.is_reacting = True
@@ -302,11 +362,18 @@ class DesktopPet(QWidget):
         self.emoticon_label.show()
         QTimer.singleShot(800, self.clear_reaction)
 
+    def drop_food_effect(self, icon):
+        """포켓몬 상자의 '먹이 주기'처럼 클릭 위치가 없는 곳에서 급여할 때,
+        위젯 가운데에서 떨어지는 먹이 이펙트를 보여준다."""
+        from PyQt6.QtCore import QPoint
+        FoodItem(self, QPoint(self.width() // 2, self.height() // 2), icon=icon)
+
     def update_ui(self):
         display_name = self.pet_data['nickname'] or self.pet_data['pokemon_type_ko']
         # 텍스트 순서: "Lv.1 이브이" 형태로 설정
         self.level_label.setText(f"Lv.{self.pet_data['level']} {display_name}")
         self.bar.setValue(self.pet_data['friendship'])
+        self.satiety_bar.setMaximum(get_max_hunger(self.pet_data['level']))
         self.satiety_bar.setValue(int(self.pet_data['hunger']))
 
     def update_pokemon_movie(self):
@@ -318,6 +385,16 @@ class DesktopPet(QWidget):
         if self.movie.fileName() != target_file and os.path.exists(target_file):
             self.movie.stop()
             self.movie.setFileName(target_file)
+
+            # QMovie는 파일을 바꿔도 이전에 setScaledSize()로 지정했던 스케일 값이
+            # 그대로 남아 있어서, 이 상태로 바로 frameRect()를 읽으면 새 파일의
+            # 진짜 원본 크기가 아니라 "이전 포켓몬 기준으로 스케일된 크기"가
+            # 나온다 (진화 직후 포켓몬이 진화 전 비율로 찌그러져 보이던 원인).
+            # 스케일을 초기화하고 한 번 start/stop을 거쳐야 새 파일의 첫 프레임이
+            # 제대로 디코딩되어 frameRect()가 정확한 원본 크기를 돌려준다.
+            self.movie.setScaledSize(QSize())
+            self.movie.start()
+            self.movie.stop()
 
             # GIF 원본 크기 확인
             self.movie.jumpToFrame(0)
@@ -358,7 +435,19 @@ class DesktopPet(QWidget):
 
         self.satiety_timer = QTimer(self)
         self.satiety_timer.timeout.connect(self.decrease_satiety)
-        self.satiety_timer.start(2000)  # 2초마다 포만감 1씩 감소 (실시간 업데이트)
+        self.satiety_timer.start(15000)  # 15초마다 포만감 감소 (예전 10초는 너무 빨리 배고파진다는 피드백으로 완화)
+
+        self.friendship_timer = QTimer(self)
+        self.friendship_timer.timeout.connect(self.passive_friendship_gain)
+        self.friendship_timer.start(15000)  # 꺼내놓은 동안 15초마다 친밀도 자동 상승
+
+        self.gold_timer = QTimer(self)
+        self.gold_timer.timeout.connect(self.passive_gold_gain)
+        self.gold_timer.start(15000)  # 꺼내놓은 동안 15초마다 일정 확률로 골드 획득
+
+        self.interaction_timer = QTimer(self)
+        self.interaction_timer.timeout.connect(self.check_pokemon_interaction)
+        self.interaction_timer.start(4000)  # 4초마다 근처 포켓몬과 상호작용할지 확인
 
     def decrease_satiety(self):
         if 'hunger' not in self.pet_data:
@@ -376,9 +465,10 @@ class DesktopPet(QWidget):
         if self.pet_data['dead'] or self.pet_data['stored']:
             return
 
-        # 포켓몬이 활성화된 상태면 포만감 감소
+        # 포켓몬이 활성화된 상태면 포만감 감소 (레벨이 높을수록 더 빨리 줄어듦)
         if self.pet_data['hunger'] > 0:
-            self.pet_data['hunger'] = max(0, self.pet_data['hunger'] - 1)
+            decay = get_hunger_decay_amount(self.pet_data['level'])
+            self.pet_data['hunger'] = max(0, self.pet_data['hunger'] - decay)
 
         # 포만감이 바닥나면(방금 떨어졌든, 0인 채로 다시 꺼내진 것이든) 목숨을 깎고
         # 상자로 돌려보낸다. hunger > 0 블록 밖에서 체크해야, 0인 상태로 다시
@@ -398,8 +488,10 @@ class DesktopPet(QWidget):
             self.manager.save_game()
             return
 
-        # 포만감이 20% 이하면 배고픔 표시
-        if self.pet_data['hunger'] <= 20:
+        # 포만감이 최대치의 20% 이하면 배고픔 표시 (레벨이 올라 최대치가 커져도
+        # 상대적인 기준을 유지하기 위해 절대값 20이 아니라 비율로 계산)
+        max_hunger = get_max_hunger(self.pet_data['level'])
+        if self.pet_data['hunger'] <= max_hunger * 0.2:
             self.emoticon_label.setStyleSheet("color: #FF6B6B; background: transparent; font-weight: bold;")
             self.emoticon_label.setText("🍗")
             self.emoticon_label.show()
@@ -407,6 +499,88 @@ class DesktopPet(QWidget):
             self.emoticon_label.hide()
 
         self.update_ui()
+
+    def passive_friendship_gain(self):
+        """데스크톱에 꺼내놓은 포켓몬은 가만히 있어도 친밀도가 조금씩 쌓인다."""
+        if self.pet_data.get('dead', False) or self.pet_data.get('stored', False):
+            return
+        if self.is_dragging:
+            return
+        self.add_exp(4)
+
+    def passive_gold_gain(self):
+        """데스크톱에 꺼내놓은 포켓몬은 가끔 골드를 주워온다."""
+        if self.pet_data.get('dead', False) or self.pet_data.get('stored', False):
+            return
+        if self.is_dragging:
+            return
+        if random.random() >= 0.2:  # 20% 확률
+            return
+        amount = random.randint(1, 5)
+        self.manager.gold += amount
+        self.show_floating_text(f"+{amount}G", "#F9A825")
+        self.manager.save_game()
+
+    def check_pokemon_interaction(self):
+        """근처에 다른 포켓몬이 나란히 서서 마주보고 있으면 확률적으로 상호작용한다."""
+        if self.is_dragging or self.is_reacting or self.state != 0:
+            return
+        if self.pet_data.get('dead', False) or self.pet_data.get('stored', False):
+            return
+        if self.y() != self.floor_y:
+            return
+
+        for other_data in self.manager.pets_data:
+            other = other_data.get('widget')
+            if other is None or other is self:
+                continue
+            if other_data.get('dead', False) or other_data.get('stored', False):
+                continue
+            if other.is_dragging or other.is_reacting or other.state != 0:
+                continue
+            if other.y() != other.floor_y:
+                continue
+
+            dx = other.x() - self.x()
+            if abs(dx) > self.width() + 30:
+                continue  # 나란히(가까이) 있지 않으면 패스
+
+            facing_each_other = (
+                (dx > 0 and self.direction == 1 and other.direction == -1) or
+                (dx < 0 and self.direction == -1 and other.direction == 1)
+            )
+            if not facing_each_other:
+                continue
+
+            # 같은 두 포켓몬 쌍을 양쪽에서 중복 처리하지 않도록 한쪽만 트리거한다
+            if id(self) > id(other):
+                continue
+
+            if random.random() < 0.6:
+                self.trigger_interaction(other)
+            return
+
+    def trigger_interaction(self, other):
+        """다른 포켓몬과 마주쳤을 때 벌어지는 이벤트를 무작위로 하나 실행한다."""
+        roll = random.random()
+        if roll < 0.34:
+            self.show_floating_text("❗", "#D32F2F")
+            other.show_floating_text("❗", "#D32F2F")
+        elif roll < 0.67:
+            self.greet_with_jumps(2)
+            other.greet_with_jumps(2)
+        else:
+            toward = random.random() < 0.5
+            self.start_dash(other.x(), toward)
+            other.start_dash(self.x(), toward)
+
+    def start_dash(self, other_x, toward=True):
+        """상대 포켓몬 쪽으로(또는 반대로) 평소보다 훨씬 빠르게 잠깐 멀리 달린다."""
+        target_direction = 1 if other_x > self.x() else -1
+        if not toward:
+            target_direction *= -1
+        self.direction = target_direction
+        self.dash_ticks_remaining = 25  # auto_walk 틱(100ms) 기준 약 2.5초 (더 멀리 달리도록 연장)
 
     def decide_random_behavior(self):
         if self.is_dragging or self.is_reacting or self.y() < self.floor_y:
@@ -435,12 +609,33 @@ class DesktopPet(QWidget):
         self.show_floating_text("♥", "#FF4081")
 
     def auto_walk(self):
-        if self.is_dragging or self.is_reacting or self.y() < self.floor_y or self.state == 1:
+        if self.is_dragging or self.is_reacting or self.state == 1:
             return
 
-        new_x = self.x() + (self.direction * 2)
-        if new_x < 0 or new_x > self.screen_width - self.width():
-            self.direction *= -1
+        # 걸어서 다른 모니터로 넘어갈 수 있으므로 매 틱마다 바닥/경계를 다시 확인한다
+        self.update_screen_bounds()
+
+        if self.gravity_timer.isActive():
+            return  # 낙하/점프 중에는 좌우 이동 보류
+
+        if self.y() != self.floor_y:
+            # 모니터를 넘어가면서 바닥 높이가 바뀐 경우: 새 바닥으로 자연스럽게 떨어뜨린다
+            self.state = 2
+            self.jump_vy = 0.0
+            self.gravity_timer.start(20)
+            return
+
+        step = 8 if self.dash_ticks_remaining > 0 else 2  # 평소 걸음(2)의 4배 속도로 질주
+        if self.dash_ticks_remaining > 0:
+            self.dash_ticks_remaining -= 1
+
+        new_x = self.x() + (self.direction * step)
+        if new_x <= self.left_bound:
+            new_x = self.left_bound
+            self.direction = 1
+        elif new_x >= self.right_bound:
+            new_x = self.right_bound
+            self.direction = -1
 
         self.move(new_x, self.y())
 
@@ -452,10 +647,19 @@ class DesktopPet(QWidget):
             self.drag_start_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
         elif event.button() == Qt.MouseButton.RightButton:
-            FoodItem(self, event.position().toPoint())
-            self.pet_data['hunger'] = min(100, self.pet_data['hunger'] + 15)
+            # 인벤토리에서 지정한 '기본 먹이'를 그대로 사용한다 (없으면 무료 먹이).
+            tier = self.manager.get_active_food_tier()
+            hunger_amount, icon, name, reaction = get_food_effect(tier)
+            if tier is not None:
+                self.manager.food_inventory[tier] -= 1
+                self.manager.clear_stale_default_food()
+                self.manager.save_game()
+
+            FoodItem(self, event.position().toPoint(), icon=icon)
+            max_hunger = get_max_hunger(self.pet_data['level'])
+            self.pet_data['hunger'] = min(max_hunger, self.pet_data['hunger'] + hunger_amount)
             self.add_exp(3)
-            self.show_floating_text("🍎 냠냠!", "#4CAF50")
+            self.show_floating_text(reaction, "#4CAF50")
 
     def mouseMoveEvent(self, event):
         if self.is_dragging and event.buttons() == Qt.MouseButton.LeftButton:
@@ -470,9 +674,12 @@ class DesktopPet(QWidget):
                 self.add_exp(5)
                 self.show_floating_text("♥ (≧◡≦) ♥", "#FF4081")
             else:
+                # 다른 모니터에 드롭했을 수 있으므로 바닥/경계를 먼저 다시 계산한다
+                self.update_screen_bounds()
+
                 # 드래그한 경우, 드롭 위치 저장
                 self.drag_end_y = self.y()  # 드롭 위치 저장
-                if self.y() < self.floor_y:
+                if self.y() != self.floor_y:
                     self.is_user_dragging = True  # 드래그 낙하 플래그 설정
                     self.jump_vy = 0
                     self.gravity_timer.start(20)
@@ -489,8 +696,10 @@ class DesktopPet(QWidget):
 
             # 사용자 드래그에 의한 낙하인 경우에만 친밀도 변화
             if self.is_user_dragging:
-                # 화면 세로 절반 지점 계산
-                screen_half_y = self.screen_height / 2
+                # 화면 세로 절반 지점 계산 (지금 놓인 모니터 기준)
+                screen = self.screen() or QApplication.primaryScreen()
+                avail = screen.availableGeometry()
+                screen_half_y = avail.y() + avail.height() / 2
 
                 # 드롭 위치(drag_end_y)가 화면 절반보다 위(Y값이 작음)인지 확인
                 if self.drag_end_y < screen_half_y:

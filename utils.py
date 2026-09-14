@@ -2,8 +2,8 @@
 import os
 import sys
 import random
-from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QLabel, QDialog, QWidget, QLineEdit
+from PyQt6.QtCore import QTimer, QEvent, Qt
 from PyQt6.QtGui import QFont, QFontDatabase
 
 if getattr(sys, 'frozen', False):
@@ -56,6 +56,45 @@ def load_pixel_font():
 
 PIXEL_FONT_FAMILY = load_pixel_font()
 
+
+class DraggableDialog(QDialog):
+    """테두리 없는(frameless) 다이얼로그를 마우스로 아무 데나 눌러서 드래그해
+    옮길 수 있게 해주는 공용 베이스 클래스. 이 앱의 다이얼로그는 전부 프레임이
+    없어서(제목 표시줄이 없어서) 기본적으로는 드래그로 옮길 방법이 없다.
+    show() 시점의 모든 자식 위젯에 이벤트 필터를 걸어서, 버튼/라벨 위를
+    눌러도(그 위젯 자신의 클릭 동작은 그대로 살아있는 채로) 창을 드래그할 수
+    있게 한다."""
+
+    def __init__(self):
+        super().__init__()
+        self._drag_pos = None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._install_drag_filter(self)
+
+    def _install_drag_filter(self, widget):
+        widget.installEventFilter(self)
+        for child in widget.findChildren(QWidget):
+            child.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        # QLineEdit 위에서의 드래그는 창 이동이 아니라 텍스트 선택으로
+        # 동작해야 한다 (수량 입력창 등에서 값을 드래그로 선택하려는데 창
+        # 자체가 따라 움직여서 불편하다는 피드백으로 추가한 예외 처리).
+        if isinstance(obj, QLineEdit):
+            return super().eventFilter(obj, event)
+
+        etype = event.type()
+        if etype == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        elif etype == QEvent.Type.MouseMove and event.buttons() == Qt.MouseButton.LeftButton and self._drag_pos is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+        elif etype == QEvent.Type.MouseButtonRelease:
+            self._drag_pos = None
+        return super().eventFilter(obj, event)
+
+
 _sprite_content_size_cache = {}
 
 def get_sprite_content_size(base_name):
@@ -87,12 +126,19 @@ def get_sprite_content_size(base_name):
 
 
 class FoodItem(QLabel):
-    """먹이 이펙트 (떨어지는 음식 애니메이션)"""
-    def __init__(self, parent, pos):
+    """먹이 이펙트 (떨어지는 음식 애니메이션). icon은 이모지 문자(무료 먹이) 또는
+    assets/items/ 안의 PNG 파일명(유료 열매)일 수 있다."""
+    def __init__(self, parent, pos, icon="🍎"):
         super().__init__(parent)
-        food_list = ["🍎", "🍓", "🍬", "🍇", "🫐", "🍰", "🧁"]
-        self.setText(random.choice(food_list))
-        self.setFont(QFont("Arial", 14))
+        if icon.lower().endswith(".png"):
+            from PyQt6.QtGui import QPixmap
+            pixmap = QPixmap(os.path.join(ASSETS_DIR, "items", icon))
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.setPixmap(pixmap)
+        else:
+            self.setText(icon)
+            self.setFont(QFont("Arial", 14))
         self.setStyleSheet("background: transparent;")
         self.adjustSize()
         self.move(pos.x() - 10, pos.y() - 10)
