@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import os
+import shutil
 import sys
 from datetime import datetime
 
@@ -12,18 +13,50 @@ if getattr(sys, 'frozen', False):
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def get_app_data_dir():
+    """OS 표준 사용자 데이터 폴더를 반환한다. exe를 어느 폴더에 두고 실행하든
+    (심지어 복사본을 여러 폴더에 두고 번갈아 실행해도) 항상 같은 경로를
+    가리키므로, exe 파일만 새 버전으로 교체해도 세이브가 자동으로 이어진다.
+    (예전엔 exe가 놓인 폴더 바로 옆에 Pokemon_saves를 뒀는데, 그러면 exe를
+    다른 폴더로 옮기거나 복사하면 세이브를 못 찾는 문제가 있었다.)"""
+    appdata = os.environ.get('APPDATA')
+    if appdata:
+        return os.path.join(appdata, 'PokemonKiwoogi')
+    return os.path.join(os.path.expanduser('~'), '.pokemon_kiwoogi')
+
+
 class SaveManager:
     """포켓몬 데이터 저장/로드 관리 클래스"""
 
     def __init__(self):
-        self.save_dir = os.path.join(APP_DIR, "Pokemon_saves")
+        self.save_dir = os.path.join(get_app_data_dir(), "Pokemon_saves")
         self.save_file = os.path.join(self.save_dir, "pokemon_data.json")
         self.ensure_save_dir()
+        self._migrate_legacy_save_if_needed()
 
     def ensure_save_dir(self):
         """저장 폴더 생성"""
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
+
+    def _migrate_legacy_save_if_needed(self):
+        """예전 버전(exe/스크립트 바로 옆에 Pokemon_saves를 두던 방식)에서 쓰던
+        세이브 파일이 있고, 새 표준 위치엔 아직 세이브가 없으면 그대로
+        복사해온다. 딱 한 번만 일어나며, 원본 레거시 파일은 안전하게 그대로
+        남겨둔다(혹시 몰라 지우지 않음)."""
+        if os.path.exists(self.save_file):
+            return  # 새 위치에 이미 세이브가 있으면 마이그레이션 불필요
+
+        legacy_file = os.path.join(APP_DIR, "Pokemon_saves", "pokemon_data.json")
+        if not os.path.exists(legacy_file) or os.path.abspath(legacy_file) == os.path.abspath(self.save_file):
+            return
+
+        try:
+            shutil.copy2(legacy_file, self.save_file)
+            print(f"기존 위치의 세이브 파일을 새 위치로 이전했습니다: {self.save_file}")
+        except Exception as e:
+            print(f"세이브 파일 이전 실패: {e}")
 
     def save_game(self, pets_data, gold=0, food_inventory=None, default_food=None,
                   stone_inventory=None, item_inventory=None):
