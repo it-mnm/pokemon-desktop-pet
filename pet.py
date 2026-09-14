@@ -253,15 +253,18 @@ class DesktopPet(QWidget):
         self.movie = QMovie(self)
         self.movie.frameChanged.connect(self.on_frame_changed)
 
+        # 닉네임이 길면 "Lv.5 xxxx" 표시가 잘리던 문제 — 예전엔 이 컨테이너가
+        # 70px밖에 안 돼서 조금만 길어도 잘렸다. 창(160px) 안에서 최대한
+        # 넓게(130px) 잡고 폰트도 살짝 줄인다.
         self.ui_widget = QWidget(self)
-        self.ui_widget.setGeometry(45, 90, 70, 35)
+        self.ui_widget.setGeometry(15, 90, 130, 35)
         ui_layout = QVBoxLayout(self.ui_widget)
         ui_layout.setContentsMargins(0, 2, 0, 0)
         ui_layout.setSpacing(0)
 
         # 레벨/이름 텍스트 중앙 정렬 및 "Lv.1 이브이" 순서 적용
         self.level_label = QLabel()
-        self.level_label.setFont(QFont(PIXEL_FONT_FAMILY, 7, QFont.Weight.Bold))
+        self.level_label.setFont(QFont(PIXEL_FONT_FAMILY, 6, QFont.Weight.Bold))
         self.level_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.level_label.setStyleSheet("color: black;")
         self.level_label.setFixedHeight(10)

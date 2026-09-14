@@ -9,6 +9,11 @@ from utils import ASSETS_DIR, PIXEL_FONT_FAMILY, get_sprite_content_size, Dragga
 from pet import MAX_LIFE, get_max_hunger, BOX_CAPACITY, PC_CAPACITY, FOOD_TIERS, FOOD_TIER_ORDER, FREE_FOOD_ICON, FREE_FOOD_NAME, get_food_effect, apply_evolution, apply_rare_candy, apply_revive
 from pokemon_data import POKEMON_DEX, STARTERS, get_ko_name, STONES, STONE_ORDER, stones_that_evolve, ITEMS, ITEM_ORDER
 
+# 데스크톱 위젯의 "Lv.5 이름" 표시 공간이 좁아서(160px 창), 닉네임이 너무 길면
+# 잘려 보이는 문제가 있었다. 표시 폭을 넓히는 것과 별개로, 애초에 지나치게
+# 긴 닉네임을 입력하지 못하게 여기서 상한을 둔다.
+NICKNAME_MAX_LENGTH = 6
+
 
 def create_dot_pixmap(size=14, color="#FF5252"):
     """작은 원 아이콘을 코드로 그려서 생성.
@@ -433,9 +438,10 @@ class PokemonAddDialog(DraggableDialog):
         species_scroll.setFixedHeight(160)
         container_layout.addWidget(species_scroll)
 
-        container_layout.addWidget(QLabel("닉네임 설정:"))
+        container_layout.addWidget(QLabel("닉네임 설정: (최대 6자)"))
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("예: 귀요미")
+        self.name_input.setMaxLength(NICKNAME_MAX_LENGTH)
         container_layout.addWidget(self.name_input)
 
         layout.addWidget(white_container)
@@ -701,10 +707,12 @@ class PokemonManagerDialog(DraggableDialog):
 
     def prompt_rename(self, pet_data):
         current = pet_data.get('nickname', '')
-        new_name, ok = QInputDialog.getText(self, "이름 변경", "새 이름을 입력하세요:", text=current)
+        new_name, ok = QInputDialog.getText(
+            self, "이름 변경", f"새 이름을 입력하세요: (최대 {NICKNAME_MAX_LENGTH}자)", text=current
+        )
         if not ok:
             return
-        pet_data['nickname'] = new_name.strip()
+        pet_data['nickname'] = new_name.strip()[:NICKNAME_MAX_LENGTH]
         if pet_data.get('widget'):
             pet_data.get('widget').update_ui()
         self.manager.save_game()
