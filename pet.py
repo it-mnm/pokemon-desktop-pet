@@ -269,20 +269,23 @@ class DesktopPet(QWidget):
         self.level_label.setStyleSheet("color: black;")
         self.level_label.setFixedHeight(10)
 
-        # 친밀도 게이지바 (분홍색)
+        # 친밀도 게이지바 (분홍색) - 이름 표시줄만 넓어진 거고 게이지바는 원래
+        # 폭(70px) 그대로 유지 + 가운데 정렬
         self.bar = QProgressBar()
         self.bar.setMaximum(100)
         self.bar.setFixedHeight(5)
+        self.bar.setFixedWidth(70)
         self.bar.setTextVisible(False)
         self.bar.setStyleSheet("""
             QProgressBar { background-color: #E0E0E0; border-radius: 2px; margin: 0px; padding: 0px; }
             QProgressBar::chunk { background-color: #FF69B4; border-radius: 2px; }
         """)
 
-        # 포만감 게이지바 (주황색)
+        # 포만감 게이지바 (주황색) - 마찬가지로 원래 폭 유지
         self.satiety_bar = QProgressBar()
         self.satiety_bar.setMaximum(100)
         self.satiety_bar.setFixedHeight(5)
+        self.satiety_bar.setFixedWidth(70)
         self.satiety_bar.setTextVisible(False)
         self.satiety_bar.setStyleSheet("""
             QProgressBar { background-color: #E0E0E0; border-radius: 2px; margin: 0px; padding: 0px; }
@@ -290,8 +293,8 @@ class DesktopPet(QWidget):
         """)
 
         ui_layout.addWidget(self.level_label)
-        ui_layout.addWidget(self.bar)
-        ui_layout.addWidget(self.satiety_bar)
+        ui_layout.addWidget(self.bar, alignment=Qt.AlignmentFlag.AlignCenter)
+        ui_layout.addWidget(self.satiety_bar, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.update_ui()
         self.show()
