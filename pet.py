@@ -258,6 +258,13 @@ class DesktopPet(QWidget):
         # 넓게(130px) 잡고 폰트도 살짝 줄인다.
         self.ui_widget = QWidget(self)
         self.ui_widget.setGeometry(15, 90, 130, 35)
+        # 이 창은 최상위 위젯에만 WA_TranslucentBackground가 걸려있고 자식
+        # QWidget에는 자동으로 안 내려가서, 배경을 명시하지 않으면 불투명한
+        # 어두운 사각형으로 그려진다. 게이지바를 원래 폭(70px)으로 되돌리면서
+        # 이 컨테이너(130px)보다 좁아져 양옆 여백에 그 어두운 배경이 그대로
+        # 드러나 보이는 문제가 생겼다 (게이지바가 얇아 보인다는 피드백의 원인).
+        self.ui_widget.setStyleSheet("background: transparent;")
+        self.ui_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         ui_layout = QVBoxLayout(self.ui_widget)
         ui_layout.setContentsMargins(0, 2, 0, 0)
         ui_layout.setSpacing(0)
